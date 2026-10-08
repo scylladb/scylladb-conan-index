@@ -1,0 +1,6 @@
+# Conan / CMake output from local `conan create` runs
+test_package/build/
+test_package/build-*/
+CMakeUserPresets.json
+__pycache__/
+*.pyc
