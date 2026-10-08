@@ -18,13 +18,6 @@ class Antlr3Conan(ConanFile):
     topics = ("antlr", "parser", "generator", "grammar", "header-only")
     package_type = "header-library"
     settings = "os", "arch", "compiler", "build_type"
-    options = {
-        "with_openjdk": [True, False],
-    }
-    default_options = {
-        # By default the launcher uses the system 'java' (or $JAVA_HOME/bin/java).
-        "with_openjdk": False,
-    }
     no_copy_source = True
 
     # ANTLR 3 is unmaintained upstream, so everything is vendored here instead of downloaded:
@@ -39,8 +32,8 @@ class Antlr3Conan(ConanFile):
         basic_layout(self)
 
     def requirements(self):
-        if self.options.with_openjdk:
-            self.requires("openjdk/21.0.2", run=True, headers=False, libs=False)
+        # Only needed to run the tool (Java >= 8), not by the C++ runtime headers
+        self.requires("openjdk/21.0.2", run=True, headers=False, libs=False)
 
     def package_id(self):
         # Headers + jar + shell launcher: nothing depends on the host configuration.

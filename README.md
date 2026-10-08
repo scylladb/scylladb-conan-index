@@ -24,15 +24,12 @@ recipes/<name>/
     └── test_package/
 ```
 
-<<<<<<< HEAD
-=======
 ## Recipes
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `antlr3` | 3.5.3 | ANTLR 3 tool (`antlr3` launcher + jar) and the header-only C++ runtime, with ScyllaDB's C++20 / gcc 14 header fixes. Fully vendored, since ANTLR 3 is no longer maintained upstream. Needs Java at runtime (or `-o antlr3/*:with_openjdk=True`). CMake: `find_package(ANTLR3)` → `ANTLR3::antlr3`. |
+| `antlr3` | 3.5.3 | ANTLR 3 tool (`antlr3` launcher + jar) and the header-only C++ runtime, with ScyllaDB's C++20 / gcc 14 header fixes. Fully vendored, since ANTLR 3 is no longer maintained upstream. Requires `openjdk` (Java ≥ 8 runs the tool) from ConanCenter, so the `conancenter` remote, or a mirror of `openjdk`, must be available. CMake: `find_package(ANTLR3)` → `ANTLR3::antlr3`. |
 
->>>>>>> 22fcdcb (Add antlr3/3.5.3 recipe)
 ## Adding or testing a recipe
 
 ```sh
