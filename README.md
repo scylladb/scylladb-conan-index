@@ -29,6 +29,7 @@ recipes/<name>/
 | Package | Version | Notes |
 |---------|---------|-------|
 | `antlr3` | 3.5.3 | ANTLR 3 tool (`antlr3` launcher + jar) and the header-only C++ runtime, with ScyllaDB's C++20 / gcc 14 header fixes. Fully vendored, since ANTLR 3 is no longer maintained upstream. Requires `openjdk` (Java ≥ 8 runs the tool) from ConanCenter, so the `conancenter` remote, or a mirror of `openjdk`, must be available. CMake: `find_package(ANTLR3)` → `ANTLR3::antlr3`. |
+| `scylla-c-ares` | 1.34.8 | Built from [scylladb/c-ares](https://github.com/scylladb/c-ares) at the commit ScyllaDB's `c-ares` submodule points to (upstream 1.34.8 plus ScyllaDB's fixes). Static, PIC, no tools by default, as ScyllaDB links it into Seastar. `provides = "c-ares"`, so it replaces ConanCenter's `c-ares` in a graph. CMake: `find_package(c-ares)` → `c-ares::cares`. |
 
 ## Adding or testing a recipe
 
