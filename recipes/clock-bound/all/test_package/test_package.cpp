@@ -2,14 +2,9 @@
 #include <cstdio>
 #include <cstring>
 
-// clockbound.h is a C header without `extern "C"` guards, and it declares a struct field
-// named `errno`, which is a macro in C++
-extern "C" {
-#pragma push_macro("errno")
-#undef errno
+// Included after <cerrno> on purpose: the packaged clockbound.h is patched to cope with the
+// errno macro and to carry its own `extern "C"` guards
 #include <clockbound.h>
-#pragma pop_macro("errno")
-}
 
 int main() {
     clockbound_err err = {};

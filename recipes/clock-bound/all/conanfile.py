@@ -4,7 +4,7 @@ from pathlib import Path
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
 from conan.tools.build import cross_building
-from conan.tools.files import copy, get
+from conan.tools.files import apply_conandata_patches, copy, export_conandata_patches, get
 from conan.tools.layout import basic_layout
 
 required_conan_version = ">=2.0"
@@ -32,6 +32,9 @@ class ClockBoundConan(ConanFile):
         "daemon": True,
     }
     exports_sources = "clockbound-install-service"
+
+    def export_sources(self):
+        export_conandata_patches(self)
 
     # The release profile of the clock-bound workspace is tuned for its daemon: fat LTO, one
     # codegen unit, panic=abort, stripped. With fat LTO libclockbound.a is a single object that
@@ -62,6 +65,7 @@ class ClockBoundConan(ConanFile):
 
     def source(self):
         get(self, **self.conan_data["sources"][self.version], strip_root=True)
+        apply_conandata_patches(self)
 
     def _cargo(self, command, args, rustc_args=""):
         # --locked: resolve exactly what the workspace's Cargo.lock pins. cargo downloads the
