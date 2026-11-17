@@ -3,3 +3,10 @@ sources:
     # aws/clock-bound at the commit ScyllaDB's clock-bound submodule points to (tag 3.0.0-rc.0)
     url: "https://github.com/aws/clock-bound/archive/371058f8f6a1786d4a4ab3eed9f5f2f16eea7777.tar.gz"
     sha256: "d2ede954fe4631785c9457ddc100fdfa1c3252a47410432e250317f24402494f"
+patches:
+  "3.0.0-rc.0":
+    - patch_file: "patches/3.0.0-rc.0-0001-clockbound-h-cxx-include.patch"
+      patch_description: >-
+        Make clockbound.h includable from C++ as is: add extern "C" guards, and hide the
+        errno macro while struct clockbound_err, which has a field named errno, is declared
+      patch_type: "portability"

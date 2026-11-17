@@ -98,17 +98,16 @@ find_package(clockbound REQUIRED CONFIG)
 target_link_libraries(my_target PRIVATE clockbound::clockbound)
 ```
 
-`clockbound.h` is a C header without `extern "C"` guards, and it has a struct field named
-`errno`, which is a macro in C++. Include it from C++ like this:
+Upstream's `clockbound.h` is a C header without `extern "C"` guards, and it has a struct
+field named `errno`, which is a macro in C++. The packaged header is patched for both
+(`all/patches`), so C++ includes it directly:
 
 ```cpp
-extern "C" {
-#pragma push_macro("errno")
-#undef errno
 #include <clockbound.h>
-#pragma pop_macro("errno")
-}
 ```
+
+The `errno` field of `clockbound_err` cannot be named in code where `errno` is a macro;
+`kind` and `detail` are unaffected.
 
 ## Static or shared
 

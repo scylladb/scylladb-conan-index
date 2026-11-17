@@ -1,0 +1,32 @@
+--- a/clock-bound-ffi/include/clockbound.h
++++ b/clock-bound-ffi/include/clockbound.h
+@@ -4,6 +4,18 @@
+ 
+ #include <time.h>
+ 
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/*
++ * `errno` is a macro wherever <errno.h> has been included (in C++, practically everywhere),
++ * and struct clockbound_err has a field of that name. Hide the macro while the struct is
++ * declared.
++ */
++#pragma push_macro("errno")
++#undef errno
++
+ #define CLOCKBOUND_ERROR_DETAIL_SIZE 128
+ #define CLOCKBOUND_SHM_DEFAULT_PATH "/var/run/clockbound/shm1"
+ #define VMCLOCK_SHM_DEFAULT_PATH "/dev/vmclock0"
+@@ -117,4 +129,10 @@
+  */
+ clockbound_err* clockbound_now(clockbound_ctx *ctx, clockbound_now_result *res, clockbound_err *err);
+ 
++#pragma pop_macro("errno")
++
++#ifdef __cplusplus
++}
++#endif
++
+ #endif
