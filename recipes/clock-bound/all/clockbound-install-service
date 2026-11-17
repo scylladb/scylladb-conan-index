@@ -1,0 +1,144 @@
+#!/bin/bash
+# Install the ClockBound daemon from this Conan package as a systemd service.
+#
+# The package only carries the daemon; nothing runs until its files are copied to the
+# paths the systemd unit expects. This script does that, with the same layout as
+# upstream's clockbound RPM.
+
+set -euo pipefail
+
+package_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+destdir=${DESTDIR:-}
+
+bindir=$destdir/usr/bin
+sbindir=$destdir/usr/sbin
+unitdir=$destdir/usr/lib/systemd/system
+logrotatedir=$destdir/etc/logrotate.d
+config=$destdir/etc/clockbound.toml
+logdir=$destdir/var/log/clockbound
+
+# Time daemons the clockbound unit conflicts with: ClockBound disciplines the system
+# clock itself, so only one of them can run
+conflicting_units=(chronyd.service ntpd.service systemd-timesyncd.service)
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [--enable | --uninstall]
+
+Install the ClockBound daemon as a systemd service:
+
+  $bindir/clockbound, $bindir/cbctl
+  $sbindir/configure_phc
+  $unitdir/clockbound.service
+  $logrotatedir/clockbound
+  $config   (logging-only sample; an existing file is kept)
+  $logdir/
+
+Options:
+  --enable     After installing, disable and stop the time daemons ClockBound
+               replaces (${conflicting_units[*]}),
+               then enable and start clockbound.service.
+  --uninstall  Stop and disable the service and remove the installed files.
+               $config and $logdir are kept.
+  -h, --help   Show this help.
+
+Without --enable the files are installed and the service is left stopped. Starting it
+later (systemctl enable --now clockbound) stops the conflicting time daemons, but does
+not disable them: disable them too, or they compete with clockbound at the next boot.
+
+Environment:
+  DESTDIR      Install under this root instead of /. systemd is not touched.
+
+Must run as root, unless DESTDIR is set.
+EOF
+}
+
+action=install
+enable=0
+for arg in "$@"; do
+    case $arg in
+        --enable) enable=1 ;;
+        --uninstall) action=uninstall ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
+    esac
+done
+if [[ $action == uninstall && $enable == 1 ]]; then
+    echo "--enable and --uninstall are mutually exclusive" >&2
+    exit 2
+fi
+
+if [[ -z $destdir && $EUID -ne 0 ]]; then
+    echo "This script must run as root (or with DESTDIR set)" >&2
+    exit 1
+fi
+
+# systemd is only driven on a real install
+use_systemd() {
+    [[ -z $destdir ]]
+}
+
+if use_systemd && ! command -v systemctl >/dev/null; then
+    echo "systemctl not found: this script needs systemd" >&2
+    exit 1
+fi
+
+do_uninstall() {
+    if use_systemd; then
+        systemctl disable --now clockbound.service 2>/dev/null || true
+    fi
+    rm -f "$bindir/clockbound" "$bindir/cbctl" "$sbindir/configure_phc" \
+        "$unitdir/clockbound.service" "$logrotatedir/clockbound"
+    if use_systemd; then
+        systemctl daemon-reload
+    fi
+    echo "ClockBound service removed. Kept: $config, $logdir"
+    echo "No time daemon was re-enabled: enable one (e.g. systemctl enable --now chronyd)" \
+        "to keep the clock synchronized."
+}
+
+do_install() {
+    for f in bin/clockbound bin/cbctl bin/configure_phc res/systemd/clockbound.service \
+            res/logrotate/clockbound.logrotate res/config/example-config-logging-only.toml; do
+        if [[ ! -f $package_dir/$f ]]; then
+            echo "Missing $package_dir/$f: was the package built with -o daemon=True?" >&2
+            exit 1
+        fi
+    done
+
+    install -D -m 755 "$package_dir/bin/clockbound" "$bindir/clockbound"
+    install -D -m 755 "$package_dir/bin/cbctl" "$bindir/cbctl"
+    install -D -m 755 "$package_dir/bin/configure_phc" "$sbindir/configure_phc"
+    install -D -m 644 "$package_dir/res/systemd/clockbound.service" "$unitdir/clockbound.service"
+    install -D -m 644 "$package_dir/res/logrotate/clockbound.logrotate" "$logrotatedir/clockbound"
+    install -d -m 755 "$logdir"
+    # The unit runs `clockbound -c /etc/clockbound.toml`, and the daemon refuses to start
+    # without that file
+    if [[ -e $config ]]; then
+        echo "Keeping existing $config"
+    else
+        install -D -m 644 "$package_dir/res/config/example-config-logging-only.toml" "$config"
+    fi
+
+    if ! use_systemd; then
+        echo "ClockBound service files installed under $destdir"
+        return
+    fi
+
+    systemctl daemon-reload
+    if [[ $enable == 1 ]]; then
+        for unit in "${conflicting_units[@]}"; do
+            if systemctl is-enabled --quiet "$unit" 2>/dev/null || systemctl is-active --quiet "$unit" 2>/dev/null; then
+                echo "Disabling $unit (replaced by clockbound)"
+                systemctl disable --now "$unit"
+            fi
+        done
+        systemctl enable --now clockbound.service
+        echo "ClockBound service installed and started. Check it with: cbctl status"
+    else
+        echo "ClockBound service installed, not started. To start it, and disable the time"
+        echo "daemons it replaces, rerun with --enable."
+    fi
+}
+
+do_$action
