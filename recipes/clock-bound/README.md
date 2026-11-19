@@ -46,6 +46,9 @@ with the same layout as upstream's `clockbound` RPM. It needs systemd and root.
    sudo /tmp/clockbound/direct_deploy/clock-bound/bin/clockbound-install-service --enable
    ```
 
+   It returns once the daemon has synchronized the clock, or fails after 180 s if it has
+   not.
+
 3. Check it:
 
    ```sh
@@ -63,13 +66,15 @@ The script installs:
 | `/usr/sbin/configure_phc` | sets up the ENA PTP hardware clock on EC2 |
 | `/usr/lib/systemd/system/clockbound.service` | systemd unit |
 | `/etc/logrotate.d/clockbound` | rotation of the daemon's logs |
-| `/etc/clockbound.toml` | configuration (logging-only sample). An existing file is kept. |
+| `/etc/clockbound.toml` | configuration (logging-only sample). An existing file is kept; NTP sources are appended to it when needed, see [Time sources](#time-sources). |
 | `/var/log/clockbound/` | log directory |
 
 Options:
 
 - `--enable`: disable and stop `chronyd`, `ntpd` and `systemd-timesyncd` if present, then
-  enable and start `clockbound.service`.
+  enable and (re)start `clockbound.service` and wait for it to synchronize the clock.
+- `--ntp-server HOST`: add `HOST` to `/etc/clockbound.toml` as an NTP source instead of
+  probing for one. Repeat for more, up to 5.
 - no option: install the files and leave the service stopped. Starting it later with
   `systemctl enable --now clockbound` stops the other time daemons but does not disable
   them, so disable them too, or they compete with clockbound at the next boot.
@@ -77,7 +82,23 @@ Options:
   and `/var/log/clockbound` are kept. No other time daemon is re-enabled; enable one
   yourself (`systemctl enable --now chronyd`).
 - `DESTDIR=<root>`: install under another root without touching systemd, for building an
-  image or a distribution package. Does not need root.
+  image or a distribution package. Does not need root. No NTP server is probed, since the
+  target host's network is unknown: only `--ntp-server` sources are added.
+
+### Time sources
+
+Off EC2 the daemon's only built-in source is the public `time.aws.com` pool, and the
+daemon drops every NTP answer that takes longer than 100 ms. Where `time.aws.com` is
+further away than that, the daemon runs but never synchronizes: `cbctl status` reports
+incomplete clock parameters and the client library reports that there is no daemon.
+
+So the script probes the built-in sources and, when they are too slow, tries a list of
+public NTP servers and appends the ones that answer in time (at most 3) to
+`/etc/clockbound.toml` as `[[sources.ntp]]` entries. A configuration that already has
+`[[sources.ntp]]` entries is left alone. To choose the servers yourself, for example an
+NTP server on your own network, pass `--ntp-server`. A server must answer within 100 ms
+and must accept NTP requests that carry an extension field, which some public servers
+(`time.cloudflare.com`, `pool.ntp.org`) do not.
 
 ## Configuration
 
