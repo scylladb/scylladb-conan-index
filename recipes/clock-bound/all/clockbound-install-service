@@ -21,9 +21,29 @@ logdir=$destdir/var/log/clockbound
 # clock itself, so only one of them can run
 conflicting_units=(chronyd.service ntpd.service systemd-timesyncd.service)
 
+# The daemon drops an NTP sample that takes longer than 100 ms (SAMPLE_TIMEOUT in its
+# sources), and retires a server after five drops in a row. A server is only usable as a
+# source if it answers well inside that, so probe with some margin.
+ntp_probe_timeout=0.08
+ntp_probe_tries=5
+ntp_probe_min_answers=4
+# The daemon's built-in sources: the Amazon Time Sync Service on EC2, time.aws.com elsewhere
+amazon_time_sync=169.254.169.123
+builtin_pool=time.aws.com
+# Public servers tried, in this order, when the built-in sources are too far away. All of
+# them answer a request carrying ClockBound's extension field, and none smears leap
+# seconds, so they can be mixed.
+ntp_candidates=(time.apple.com ntp.metas.ch ntp.ripe.net ntp1.inrim.it ntp.time.nl
+    ntp.ubuntu.com ntp.nict.jp)
+max_auto_ntp_servers=3
+# The daemon accepts at most this many `server` sources (MAX_SERVERS)
+max_ntp_servers=5
+# How long --enable waits for the daemon to synchronize the clock
+sync_timeout_seconds=180
+
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--enable | --uninstall]
+Usage: $(basename "$0") [--enable] [--ntp-server HOST]... | --uninstall
 
 Install the ClockBound daemon as a systemd service:
 
@@ -34,10 +54,21 @@ Install the ClockBound daemon as a systemd service:
   $config   (logging-only sample; an existing file is kept)
   $logdir/
 
+Off EC2 the daemon's only built-in source is $builtin_pool, and it drops every answer
+that takes longer than 100 ms. Where $builtin_pool is further away than that the daemon
+never synchronizes, so the script probes it and, if it is too slow, adds the public NTP
+servers that do answer in time to $config
+(tried: ${ntp_candidates[*]}).
+A configuration that already has [[sources.ntp]] entries is left alone.
+
 Options:
   --enable     After installing, disable and stop the time daemons ClockBound
                replaces (${conflicting_units[*]}),
-               then enable and start clockbound.service.
+               then enable and (re)start clockbound.service and wait up to
+               $sync_timeout_seconds s for it to synchronize the clock.
+  --ntp-server HOST
+               Add HOST (name or address) to $config as an NTP source, instead of
+               probing for one. Repeat for more, up to $max_ntp_servers.
   --uninstall  Stop and disable the service and remove the installed files.
                $config and $logdir are kept.
   -h, --help   Show this help.
@@ -47,7 +78,8 @@ later (systemctl enable --now clockbound) stops the conflicting time daemons, bu
 not disable them: disable them too, or they compete with clockbound at the next boot.
 
 Environment:
-  DESTDIR      Install under this root instead of /. systemd is not touched.
+  DESTDIR      Install under this root instead of /. systemd is not touched and no
+               NTP server is probed: only --ntp-server sources are added.
 
 Must run as root, unless DESTDIR is set.
 EOF
@@ -55,18 +87,40 @@ EOF
 
 action=install
 enable=0
-for arg in "$@"; do
-    case $arg in
+ntp_servers=()
+while (($#)); do
+    case $1 in
         --enable) enable=1 ;;
         --uninstall) action=uninstall ;;
+        --ntp-server)
+            if (($# < 2)); then
+                echo "--ntp-server needs a host" >&2
+                exit 2
+            fi
+            ntp_servers+=("$2")
+            shift
+            ;;
+        --ntp-server=*) ntp_servers+=("${1#*=}") ;;
         -h|--help) usage; exit 0 ;;
-        *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
+        *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
+    shift
 done
-if [[ $action == uninstall && $enable == 1 ]]; then
-    echo "--enable and --uninstall are mutually exclusive" >&2
+if [[ $action == uninstall ]] && ((enable || ${#ntp_servers[@]})); then
+    echo "--uninstall cannot be combined with --enable or --ntp-server" >&2
     exit 2
 fi
+if ((${#ntp_servers[@]} > max_ntp_servers)); then
+    echo "At most $max_ntp_servers --ntp-server sources are supported" >&2
+    exit 2
+fi
+for server in "${ntp_servers[@]}"; do
+    # The host ends up in the TOML configuration, so only accept a name or an address
+    if [[ ! $server =~ ^[A-Za-z0-9][A-Za-z0-9.:-]*$ ]]; then
+        echo "Invalid --ntp-server host: $server" >&2
+        exit 2
+    fi
+done
 
 if [[ -z $destdir && $EUID -ne 0 ]]; then
     echo "This script must run as root (or with DESTDIR set)" >&2
@@ -82,6 +136,105 @@ if use_systemd && ! command -v systemctl >/dev/null; then
     echo "systemctl not found: this script needs systemd" >&2
     exit 1
 fi
+
+# Send one NTP request to $1 and succeed if the answer starts arriving within
+# $ntp_probe_timeout. The request is what the daemon sends to that kind of source: a bare
+# 48-byte client packet to the Amazon Time Sync Service ($2 = plain), and the same packet
+# followed by ClockBound's 16-byte 0xFEC2 extension field to every other server. Some
+# public servers do not answer a request carrying an extension field.
+ntp_probe_once() {
+    local host=$1 kind=${2:-extended} fd rc=0
+    exec {fd}<>"/dev/udp/$host/123" || return 1
+    {
+        printf '\x23'
+        head -c 47 /dev/zero
+        if [[ $kind != plain ]]; then
+            printf '\xfe\xc2\x00\x10\x01'
+            head -c 11 /dev/zero
+        fi
+    } >&"$fd" || rc=1
+    if ((rc == 0)); then
+        LC_ALL=C IFS= read -r -t "$ntp_probe_timeout" -N 1 -u "$fd" _ || rc=1
+    fi
+    exec {fd}>&-
+    return $rc
+}
+
+# Succeed if $1 answers at least $ntp_probe_min_answers of $ntp_probe_tries requests in time
+ntp_answers_in_time() {
+    local i answers=0
+    for ((i = 0; i < ntp_probe_tries; i++)); do
+        if ntp_probe_once "$@" 2>/dev/null; then
+            answers=$((answers + 1))
+        fi
+    done
+    ((answers >= ntp_probe_min_answers))
+}
+
+config_has_ntp_sources() {
+    grep -Eq '^[[:space:]]*\[\[sources\.ntp\]\]' "$config"
+}
+
+# Append the given servers to the configuration as NTP sources, skipping the ones it
+# already names
+add_ntp_sources() {
+    local server added=()
+    for server in "$@"; do
+        if grep -Fq "\"$server\"" "$config"; then
+            continue
+        fi
+        printf '\n# Added by clockbound-install-service\n[[sources.ntp]]\nserver = "%s"\n' \
+            "$server" >> "$config"
+        added+=("$server")
+    done
+    if ((${#added[@]})); then
+        echo "Added NTP sources to $config: ${added[*]}"
+        config_changed=1
+    fi
+}
+
+# Make sure the daemon has a time source it can synchronize from
+configure_ntp_sources() {
+    local server usable=()
+    if ((${#ntp_servers[@]})); then
+        add_ntp_sources "${ntp_servers[@]}"
+        if use_systemd; then
+            for server in "${ntp_servers[@]}"; do
+                if ! ntp_answers_in_time "$server"; then
+                    echo "Warning: $server did not answer within the daemon's 100 ms sample" \
+                        "timeout; the daemon cannot synchronize from it." >&2
+                fi
+            done
+        fi
+        return
+    fi
+    # The network of the target host is unknown when staging into DESTDIR
+    if ! use_systemd; then
+        return
+    fi
+    if config_has_ntp_sources; then
+        echo "Keeping the NTP sources configured in $config"
+        return
+    fi
+    if ntp_answers_in_time "$amazon_time_sync" plain || ntp_answers_in_time "$builtin_pool"; then
+        return
+    fi
+    echo "$builtin_pool does not answer within the daemon's 100 ms sample timeout:" \
+        "looking for closer NTP servers"
+    for server in "${ntp_candidates[@]}"; do
+        if ntp_answers_in_time "$server"; then
+            usable+=("$server")
+            ((${#usable[@]} < max_auto_ntp_servers)) || break
+        fi
+    done
+    if ((${#usable[@]} == 0)); then
+        echo "Warning: no NTP server answered in time (tried ${ntp_candidates[*]})." >&2
+        echo "The daemon will not synchronize until $config names a server that answers" \
+            "within 100 ms: rerun with --ntp-server HOST." >&2
+        return
+    fi
+    add_ntp_sources "${usable[@]}"
+}
 
 do_uninstall() {
     if use_systemd; then
@@ -119,6 +272,8 @@ do_install() {
     else
         install -D -m 644 "$package_dir/res/config/example-config-logging-only.toml" "$config"
     fi
+    config_changed=0
+    configure_ntp_sources
 
     if ! use_systemd; then
         echo "ClockBound service files installed under $destdir"
@@ -133,8 +288,26 @@ do_install() {
                 systemctl disable --now "$unit"
             fi
         done
-        systemctl enable --now clockbound.service
-        echo "ClockBound service installed and started. Check it with: cbctl status"
+        systemctl enable clockbound.service
+        # Restart, not start: on a reinstall the running daemon has the old binary and
+        # configuration
+        systemctl restart clockbound.service
+        echo "ClockBound service started, waiting up to $sync_timeout_seconds s for the clock to synchronize"
+        if ! "$bindir/cbctl" waitsync --timeout-seconds "$sync_timeout_seconds"; then
+            echo "ClockBound is running but did not synchronize the clock. Check its sources" \
+                "with: cbctl sources, journalctl -u clockbound" >&2
+            echo "If none answers within 100 ms, rerun with --ntp-server HOST." >&2
+            exit 1
+        fi
+        echo "ClockBound service installed and synchronized. Check it with: cbctl status"
+    elif systemctl is-active --quiet clockbound.service; then
+        if ((config_changed)); then
+            echo "ClockBound service files updated. The running daemon still has the old" \
+                "binary and configuration: systemctl restart clockbound"
+        else
+            echo "ClockBound service files updated. The running daemon still has the old" \
+                "binary: systemctl restart clockbound"
+        fi
     else
         echo "ClockBound service installed, not started. To start it, and disable the time"
         echo "daemons it replaces, rerun with --enable."
